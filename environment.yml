@@ -1,0 +1,13 @@
+name: omi-command-env
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.9
+  - nextflow >=23.10.0
+  - singularity
+  - apptainer
+  - curl
+  - wget
+  - numpy
+  - pandas
