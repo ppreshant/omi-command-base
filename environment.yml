@@ -11,3 +11,7 @@ dependencies:
   - wget
   - numpy
   - pandas
+  - fastapi>=0.115.0
+  - uvicorn>=0.25.0
+  - python-jose>=3.3.0
+  - python-multipart>=0.0.6
