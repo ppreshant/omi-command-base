@@ -1,109 +1,46 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
-from pydantic import BaseModel
-from typing import Dict, Optional
-import asyncio
-from datetime import datetime
-import uuid
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import os
+import subprocess
+from typing import Optional
 
 app = FastAPI()
 
-# In-memory store for command executions
-command_store: Dict[str, dict] = {}
+# Temporary directory to store uploaded files
+TEMP_DIR = "/tmp/uploaded_files"
 
-class CommandRequest(BaseModel):
-    command: str
-    working_directory: Optional[str] = None
-
-class CommandStatus(BaseModel):
-    command_id: str
-    status: str
-    exit_code: Optional[int] = None
-    start_time: datetime
-    end_time: Optional[datetime] = None
-
-class CommandOutput(BaseModel):
-    command_id: str
-    stdout: str
-    stderr: str
-
-async def execute_command_async(command_id: str, command: str, working_dir: Optional[str] = None):
-    try:
-        start_time = datetime.now()
-        command_store[command_id]["status"] = "running"
-        command_store[command_id]["start_time"] = start_time
-        
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=working_dir,
-            shell=True
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        end_time = datetime.now()
-        command_store[command_id].update({
-            "status": "completed" if process.returncode == 0 else "failed",
-            "exit_code": process.returncode,
-            "stdout": stdout.decode(),
-            "stderr": stderr.decode(),
-            "end_time": end_time
-        })
-    except Exception as e:
-        command_store[command_id].update({
-            "status": "failed",
-            "stderr": str(e),
-            "end_time": datetime.now()
-        })
+# Ensure the temp directory exists
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 @app.post("/api/v1/commands")
-async def create_command(command: CommandRequest):
-    command_id = str(uuid.uuid4())
-    command_store[command_id] = {
-        "command": command.command,
-        "status": "pending",
-        "start_time": datetime.now()
-    }
+async def run_command_with_file(
+    command: str = Form(...),  # Changed from query parameter to Form
+    file: UploadFile = File(...),
+    working_directory: Optional[str] = Form(None)
+):
+    """
+    Run a command with an uploaded file.
+    """
+    print(f"Received command: {command}")
+    print(f"Received file: {file.filename}")
     
-    # Start command execution in background
-    asyncio.create_task(execute_command_async(
-        command_id,
-        command.command,
-        command.working_directory
-    ))
-    
-    return {"command_id": command_id, "status": "pending"}
+    # Save the uploaded file temporarily
+    try:
+        # Create a temp file
+        temp_file_path = os.path.join(TEMP_DIR, file.filename)
+        with open(temp_file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-@app.get("/api/v1/commands/{command_id}/status")
-async def get_command_status(command_id: str):
-    if command_id not in command_store:
-        raise HTTPException(status_code=404, detail="Command not found")
-    
-    cmd = command_store[command_id]
-    return CommandStatus(
-        command_id=command_id,
-        status=cmd["status"],
-        exit_code=cmd.get("exit_code"),
-        start_time=cmd["start_time"],
-        end_time=cmd.get("end_time")
-    )
-
-@app.get("/api/v1/commands/{command_id}/output")
-async def get_command_output(command_id: str):
-    if command_id not in command_store:
-        raise HTTPException(status_code=404, detail="Command not found")
-    
-    cmd = command_store[command_id]
-    if cmd["status"] not in ["completed", "failed"]:
-        raise HTTPException(status_code=400, detail="Command execution not finished")
-    
-    return CommandOutput(
-        command_id=command_id,
-        stdout=cmd.get("stdout", ""),
-        stderr=cmd.get("stderr", "")
-    )
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Run the command
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        stdout, stderr = result.stdout, result.stderr
+        return {
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": result.returncode
+        }
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Command failed: {e}")
